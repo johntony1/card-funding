@@ -86,7 +86,140 @@ const CARDS = [
 ]
 
 const TEXTURE = 'https://www.figma.com/api/mcp/asset/8bc77c6b-4413-48df-9b5e-0baf2e2f40ae'
-const SUCCESS_RESET = 2000
+
+// ─── CONFETTI (canvas-based, same as Currency exchange) ──
+const CONFETTI_COLORS = [
+  '#22c55e', '#4ade80', '#86efac', '#bbf7d0',   // greens
+  '#fbbf24', '#fde68a', '#f59e0b',               // golds
+  '#ffffff', '#f0fdf4',                           // whites/light
+  '#6ee7b7', '#a7f3d0',                           // mints
+]
+const CONFETTI_DURATION   = 5200   // ms — full confetti lifetime
+const CONFETTI_FADE_START = 3600   // ms — start fading at 3.6s
+
+type ConfettiParticle = {
+  x: number; y: number
+  vx: number; vy: number
+  rot: number; rotV: number
+  w: number; h: number
+  color: string
+  alpha: number
+  dot: boolean
+}
+
+function spawnParticles(cx: number, cy: number, count: number): ConfettiParticle[] {
+  return Array.from({ length: count }, () => {
+    const angle = Math.random() * Math.PI * 2
+    const speed = 1.8 + Math.random() * 5.5
+    const dot   = Math.random() < 0.25
+    return {
+      x: cx, y: cy,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 2.5,
+      rot:  Math.random() * Math.PI * 2,
+      rotV: (Math.random() - 0.5) * 0.18,
+      w: dot ? 5 + Math.random() * 4 : 4 + Math.random() * 8,
+      h: dot ? 5 + Math.random() * 4 : 9 + Math.random() * 8,
+      color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
+      alpha: 1, dot,
+    }
+  })
+}
+
+function ConfettiCanvas({ badgeRef }: { badgeRef: React.RefObject<HTMLDivElement | null> }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const reduced   = useReducedMotion()
+
+  useEffect(() => {
+    if (reduced) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const dpr     = window.devicePixelRatio || 1
+    const rect    = canvas.getBoundingClientRect()
+    canvas.width  = rect.width  * dpr
+    canvas.height = rect.height * dpr
+    ctx.scale(dpr, dpr)
+    const W = rect.width
+    const H = rect.height
+
+    let particles: ConfettiParticle[] = []
+    let start: number | null = null
+    let rafId: number
+
+    const launchTimer = window.setTimeout(() => {
+      const badge     = badgeRef.current
+      const origin    = badge?.getBoundingClientRect()
+      const canvasPos = canvas.getBoundingClientRect()
+      const cx = origin ? origin.left + origin.width  / 2 - canvasPos.left : W / 2
+      const cy = origin ? origin.top  + origin.height / 2 - canvasPos.top  : H * 0.35
+      particles = spawnParticles(cx, cy, 72)
+    }, 180)
+
+    function frame(now: number) {
+      if (!start) start = now
+      const t = now - start
+      ctx!.clearRect(0, 0, W, H)
+
+      for (const p of particles) {
+        p.vy  += 0.16
+        p.vx  *= 0.988
+        p.vy  *= 0.988
+        p.x   += p.vx
+        p.y   += p.vy
+        p.rot += p.rotV
+
+        if (t > CONFETTI_FADE_START) {
+          p.alpha = Math.max(0, 1 - (t - CONFETTI_FADE_START) / 900)
+        }
+        if (p.alpha <= 0 || p.y > H + 40) continue
+
+        ctx!.save()
+        ctx!.translate(p.x, p.y)
+        ctx!.rotate(p.rot)
+        ctx!.globalAlpha = p.alpha
+        ctx!.fillStyle   = p.color
+
+        if (p.dot) {
+          ctx!.beginPath()
+          ctx!.arc(0, 0, p.w / 2, 0, Math.PI * 2)
+          ctx!.fill()
+        } else {
+          ctx!.fillRect(-p.w / 2, -p.h / 2, p.w, p.h)
+        }
+        ctx!.restore()
+      }
+
+      if (t < CONFETTI_DURATION) {
+        rafId = requestAnimationFrame(frame)
+      } else {
+        ctx!.clearRect(0, 0, W, H)
+      }
+    }
+
+    rafId = requestAnimationFrame(frame)
+
+    return () => {
+      clearTimeout(launchTimer)
+      cancelAnimationFrame(rafId)
+      ctx.clearRect(0, 0, W, H)
+    }
+  }, [reduced, badgeRef])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      aria-hidden="true"
+      style={{
+        position: 'absolute', inset: 0,
+        width: '100%', height: '100%',
+        pointerEvents: 'none', zIndex: 20,
+      }}
+    />
+  )
+}
 
 // ─── HELPERS ─────────────────────────────────────────────
 const inter = (w: number, s: number, lh: string, c: string, x?: React.CSSProperties): React.CSSProperties => ({
@@ -399,6 +532,171 @@ function OdometerDigit({ char, dir }: { char: string; dir: OdomDir }) {
   )
 }
 
+// ─── SUCCESS VIEW ────────────────────────────────────────
+/*
+ * STORYBOARD — mirrors Currency exchange TransactionSuccess exactly
+ *
+ *   0ms   green glow: scale(0.6) opacity(0) → in    spring bounce:0.2
+ *  80ms   badge: scale(0) blur(8px) → [1.25/0.92/1.06/1] distortion pop
+ * 180ms   confetti burst: 72 ribbons + dots from badge center (canvas RAF)
+ *          gravity 0.16, air drag 0.988, fade @ 3.6s, done @ 5.2s
+ * 220ms   "Card Funded" fades + slides up
+ * 300ms   amount row fades + slides up
+ * 440ms   "View card" button fades + slides up
+ */
+function SuccessView({ amount, onDone }: { amount: string; onDone: () => void }) {
+  const reduced    = useReducedMotion()
+  const badgeRef   = useRef<HTMLDivElement>(null)
+  const displayAmt = amount.replace('$', '') + ' USD'
+
+  return (
+    <div style={{
+      position: 'relative', overflow: 'hidden', borderRadius: 20,
+      height: 320,
+      display: 'flex', flexDirection: 'column',
+      background: '#ffffff',
+    }}>
+
+      {/* Canvas confetti — same physics as Currency exchange */}
+      {!reduced && <ConfettiCanvas badgeRef={badgeRef} />}
+
+      {/* ── Soft green radial glow — CENTERED
+           No `transform` in style — Framer Motion owns that property.
+           Centre with left: calc(50% - 170px) instead.              */}
+      <motion.div
+        aria-hidden="true"
+        initial={{ opacity: 0, scale: 0.6 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={reduced
+          ? { duration: 0.15 }
+          : { type: 'spring', visualDuration: 0.55, bounce: 0.2 }}
+        style={{
+          position: 'absolute',
+          top: 'calc(50% - 140px)',       // vertically centered (height 280px)
+          left: 'calc(50% - 170px)',      // horizontally centered (width 340px)
+          width: 340, height: 280,
+          transformOrigin: 'center center',
+          background: [
+            'radial-gradient(ellipse 60% 60% at 50% 50%,',
+            '  rgba(187,247,208,0.95) 0%,',
+            '  rgba(134,239,172,0.55) 40%,',
+            '  rgba(74,222,128,0.15)  65%,',
+            '  transparent 85%)',
+          ].join(''),
+          pointerEvents: 'none',
+          zIndex: 0,
+        }}
+      />
+
+      {/* ── Body — badge + text ── */}
+      <div style={{
+        position: 'relative', zIndex: 1,
+        flex: 1,
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        padding: '0 24px', gap: 16,
+      }}>
+
+        {/* Check badge — distortion pop (exact Currency exchange sequence) */}
+        <motion.div
+          ref={badgeRef}
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{
+            scale:   reduced ? [0, 1] : [0, 1.25, 0.92, 1.06, 1],
+            opacity: [0, 1, 1, 1, 1],
+            filter:  reduced
+              ? ['blur(0px)', 'blur(0px)']
+              : ['blur(8px)', 'blur(3px)', 'blur(0px)', 'blur(0px)', 'blur(0px)'],
+          }}
+          transition={{
+            times:    [0, 0.34, 0.56, 0.76, 1],
+            duration: reduced ? 0.15 : 0.72,
+            ease:     'easeOut',
+            delay:    reduced ? 0 : 0.08,
+          }}
+          style={{
+            width: 64, height: 64, borderRadius: 9999,
+            background: '#ffffff',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0, position: 'relative',
+            boxShadow: [
+              '0px 32px 32px -16px rgba(11,70,39,0.08)',
+              '0px 16px 16px -8px  rgba(11,70,39,0.06)',
+              '0px 9.6px 9.6px -4.8px rgba(11,70,39,0.05)',
+              '0px 4.8px 4.8px -2.4px rgba(11,70,39,0.04)',
+              '0px 1.6px 1.6px -0.8px rgba(11,70,39,0.04)',
+              '0px 0px 0px 1.6px    rgba(11,70,39,0.07)',
+            ].join(', '),
+          }}
+        >
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M5 12L10 17L19 7" stroke="#16a34a" strokeWidth="2.5"
+              strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <div aria-hidden style={{
+            position: 'absolute', inset: 0, borderRadius: 9999, pointerEvents: 'none',
+            boxShadow: 'inset 0px 1px 2px 0px rgba(255,255,255,0.60)',
+          }} />
+        </motion.div>
+
+        {/* Text group */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+          <motion.p
+            initial={{ opacity: 0, y: reduced ? 0 : 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={reduced ? { duration: 0.12 } : { type: 'spring', visualDuration: 0.42, bounce: 0.14, delay: 0.22 }}
+            style={inter(600, 16, '24px', '#171717', { letterSpacing: '-0.096px', textAlign: 'center' })}
+          >
+            Card Funded
+          </motion.p>
+          <motion.div
+            initial={{ opacity: 0, y: reduced ? 0 : 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={reduced ? { duration: 0.12 } : { type: 'spring', visualDuration: 0.42, bounce: 0.14, delay: 0.30 }}
+            style={{ width: 220, textAlign: 'center' }}
+          >
+            <p style={{ margin: 0, lineHeight: '20px' }}>
+              <span style={inter(500, 14, '20px', '#171717', { display: 'inline', letterSpacing: '-0.084px' })}>
+                {displayAmt}
+              </span>
+              <span style={inter(400, 13, '20px', '#5c5c5c', { display: 'inline', letterSpacing: '-0.078px' })}>
+                {' has been added to your card successfully'}
+              </span>
+            </p>
+          </motion.div>
+        </div>
+      </div>
+
+      {/* ── View card button ── */}
+      <motion.div
+        initial={{ opacity: 0, y: reduced ? 0 : 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={reduced ? { duration: 0.12 } : { type: 'spring', visualDuration: 0.42, bounce: 0.14, delay: 0.44 }}
+        style={{ padding: '0 16px 20px', position: 'relative', zIndex: 1, flexShrink: 0 }}
+      >
+        <motion.button
+          onClick={onDone}
+          whileTap={{ scale: 0.97 }}
+          transition={{ type: 'spring', stiffness: 700, damping: 42 }}
+          style={{
+            width: '100%', height: 40,
+            borderRadius: 24, border: 'none',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: '#ffffff', cursor: 'pointer',
+            boxShadow: '0px 1px 3px 0px rgba(14,18,27,0.12), 0px 0px 0px 1px #ebebeb',
+            WebkitTapHighlightColor: 'transparent', outline: 'none',
+          }}
+        >
+          <span style={inter(500, 14, '20px', '#5c5c5c', { letterSpacing: '-0.084px' })}>
+            View card
+          </span>
+        </motion.button>
+      </motion.div>
+
+    </div>
+  )
+}
+
 // ─── SHEET CONTENT (inline, no fixed overlay) ────────────
 const SD = { wallet: 0.12, amount: 0.19, stepper: 0.27, breakdown: 0.34, button: 0.42 }
 
@@ -420,6 +718,7 @@ function SheetContent({ onClose, onProceed }: SheetContentProps) {
   const [value, setValue]         = useState(69)
   const [odomDir, setOdomDir]     = useState<OdomDir>(1)
   const [trackHovered, setTrackHovered] = useState(false)
+  const [dragging, setDragging]         = useState(false)
   const prevVal    = useRef(69)
   const isDragging = useRef(false)
   const total = value + SHEET_FEE
@@ -479,6 +778,7 @@ function SheetContent({ onClose, onProceed }: SheetContentProps) {
   const onThumbPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId)
     isDragging.current = true
+    setDragging(true)
   }, [])
 
   const onThumbPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -501,6 +801,7 @@ function SheetContent({ onClose, onProceed }: SheetContentProps) {
   const onThumbPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.releasePointerCapture(e.pointerId)
     isDragging.current = false
+    setDragging(false)
     // If pointer released outside the track, hide fill
     if (trackRef.current) {
       const rect = trackRef.current.getBoundingClientRect()
@@ -601,7 +902,7 @@ function SheetContent({ onClose, onProceed }: SheetContentProps) {
               left: thumbLeft,
               width: THUMB_W, height: THUMB_H,
               borderRadius: 8, background: '#d1d1d1',
-              cursor: trackHovered ? 'ew-resize' : 'default',
+              cursor: trackHovered ? (dragging ? 'grabbing' : 'grab') : 'default',
               zIndex: 2, touchAction: 'none',
               pointerEvents: trackHovered ? 'auto' : 'none',
             }}
@@ -681,7 +982,7 @@ function SheetContent({ onClose, onProceed }: SheetContentProps) {
       </motion.div>
 
       {/* ── Proceed — 40px height, 8px radius from Figma ────── */}
-      <motion.div {...cv(SD.button)} style={{ padding: '12px 16px 0' }}>
+      <motion.div {...cv(SD.button)} style={{ padding: '12px 16px 16px' }}>
         <motion.button
           onClick={() => onProceed(`$${value.toFixed(2)}`)}
           whileTap={{ scale: 0.98 }}
@@ -717,11 +1018,6 @@ function SheetContent({ onClose, onProceed }: SheetContentProps) {
           </span>
         </motion.button>
       </motion.div>
-
-      {/* Home indicator */}
-      <div style={{ height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: 132, height: 5, background: '#ebebeb', borderRadius: 100 }} />
-      </div>
 
       {/* Inner edge shadow */}
       <div aria-hidden style={{
@@ -825,11 +1121,11 @@ export default function CardFunding() {
           borderRadius animates from 32 (wallet) to 20 (sheet). */}
       <motion.div
         layout
-        animate={{ borderRadius: stage === 'sheet' ? 20 : 32 }}
+        animate={{ borderRadius: stage === 'idle' ? 32 : 20 }}
         style={{
           width: 390,
           overflow: 'hidden',
-          boxShadow: stage === 'sheet'
+          boxShadow: stage !== 'idle'
             ? '0px 0px 0px 1px rgba(51,51,51,0.04), 0px 12px 6px -6px rgba(51,51,51,0.02), 0px 5px 5px -2.5px rgba(51,51,51,0.08), 0px 1px 3px -1.5px rgba(51,51,51,0.16)'
             : 'none',
         }}
@@ -837,49 +1133,26 @@ export default function CardFunding() {
       >
         <AnimatePresence mode="popLayout" initial={false}>
 
-          {stage !== 'sheet' ? (
-
-            /* ── WALLET VIEW ─────────────────────────────────
-               paddingTop:80 creates headroom so overflow:hidden
-               doesn't clip back cards that bleed above wallet.
-               The wallet (343px) is centered inside 390px.
-               Exit: slides UP and out — as if the wallet lifted
-               away to reveal the sheet expanding beneath it. */
+          {/* ── WALLET VIEW ──────────────────────────────────── */}
+          {stage === 'idle' && (
             <motion.div
               key="wallet"
               style={{ paddingTop: 80, position: 'relative' }}
               initial={{ opacity: 0, y: 32 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{
-                opacity: 0,
-                y: -52,
-                scale: 0.93,
+                opacity: 0, y: -52, scale: 0.93,
                 transition: { duration: 0.32, ease: [0.4, 0, 0.55, 1] },
               }}
               transition={{ type: 'spring', duration: 0.52, bounce: 0.24 }}
             >
-              {/*
-                contain:paint is the CSS spec guarantee that nothing renders outside
-                this element's border box — stronger than overflow:hidden because it
-                applies at the compositing stage, not just the paint stage.
-                paddingTop + negative marginTop creates headroom for cards springing up.
-              */}
-              <div style={{
-                width: 343,
-                margin: '0 auto',
-                contain: 'paint',
-                paddingTop: 70,
-                marginTop: -70,
-              }}>
+              <div style={{ width: 343, margin: '0 auto', contain: 'paint', paddingTop: 70, marginTop: -70 }}>
               <div
                 ref={deckRef}
                 onMouseMove={onMouseMove}
                 onMouseEnter={onMouseEnter}
                 onMouseLeave={onMouseLeave}
-                style={{
-                  position: 'relative',
-                  width: 343, height: 259,
-                }}
+                style={{ position: 'relative', width: 343, height: 259 }}
               >
                 {/* Wallet shell */}
                 <div style={{
@@ -950,116 +1223,58 @@ export default function CardFunding() {
                   </div>
                 </div>
 
-                {/* Balance + button */}
-                <AnimatePresence>
-                  {stage === 'idle' && (
-                    <motion.div
-                      key="balance"
-                      style={{
-                        position: 'absolute', left: 127, top: 124, width: 90, zIndex: 7,
-                        display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center',
-                      }}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                      transition={{ duration: 0.3 }}
-                    >
-                      <div style={{ width: 77, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <p style={inter(500, 18, '24px', '#fff', { width: '100%', letterSpacing: '-0.27px', fontVariantNumeric: 'tabular-nums' })}>
-                          $98,000
-                        </p>
-                        <p style={inter(400, 12, '16px', 'rgba(255,255,255,0.7)', { width: '100%' })}>
-                          Total balance
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => setStage('sheet')}
-                        aria-label="Add money"
-                        style={{
-                          position: 'relative', width: '100%', height: 32,
-                          display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'center',
-                          overflow: 'hidden', padding: 6, borderRadius: 8,
-                          border: 'none', background: 'transparent', cursor: 'pointer',
-                          boxShadow: '0px 1px 3px 0px rgba(14,18,27,0.12), 0px 0px 0px 1px rgba(255,255,255,0.1)',
-                        }}
-                      >
-                        <div aria-hidden style={{ position: 'absolute', inset: 0, borderRadius: 8, backdropFilter: 'blur(15px)', background: 'rgba(255,255,255,0.1)', pointerEvents: 'none' }} />
-                        <p style={inter(500, 13, '20px', '#fff', { position: 'relative', whiteSpace: 'nowrap', padding: '0 4px', letterSpacing: '-0.078px' })}>
-                          Add money
-                        </p>
-                        <div aria-hidden style={{ position: 'absolute', inset: 0, borderRadius: 'inherit', boxShadow: 'inset 0px 0px 4px 2px rgba(255,255,255,0.1)', pointerEvents: 'none' }} />
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                {/* Success overlay */}
-                <AnimatePresence>
-                  {stage === 'success' && (
-                    <motion.div
-                      key="success"
-                      style={{
-                        position: 'absolute', inset: 0, zIndex: 20, borderRadius: 32,
-                        display: 'flex', flexDirection: 'column',
-                        alignItems: 'center', justifyContent: 'center', gap: 12,
-                        backdropFilter: 'blur(10px)', background: 'rgba(25,36,46,0.82)',
-                      }}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.22 }}
-                    >
-                      <motion.div
-                        initial={{ scale: 0, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        transition={{ ...SPRINGS.pop, delay: 0.1 }}
-                        style={{
-                          width: 48, height: 48, borderRadius: '50%',
-                          background: 'rgba(44,172,77,0.18)', border: '1px solid rgba(44,172,77,0.4)',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        }}
-                      >
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                          <motion.path d="M5 13l4 4L19 7" stroke="#2cac4d" strokeWidth="2.5"
-                            strokeLinecap="round" strokeLinejoin="round"
-                            initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
-                            transition={{ duration: 0.35, delay: 0.2 }} />
-                        </svg>
-                      </motion.div>
-                      <motion.div
-                        style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}
-                        initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.28, delay: 0.28 }}
-                      >
-                        <p style={inter(500, 15, '22px', '#fff')}>{successAmt} added!</p>
-                        <p style={inter(400, 12, '18px', 'rgba(255,255,255,0.6)')}>Funds are on their way</p>
-                      </motion.div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                {/* Balance + Add money button */}
+                <motion.div
+                  style={{
+                    position: 'absolute', left: 127, top: 124, width: 90, zIndex: 7,
+                    display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center',
+                  }}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <div style={{ width: 77, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <p style={inter(500, 18, '24px', '#fff', { width: '100%', letterSpacing: '-0.27px', fontVariantNumeric: 'tabular-nums' })}>
+                      $98,000
+                    </p>
+                    <p style={inter(400, 12, '16px', 'rgba(255,255,255,0.7)', { width: '100%' })}>
+                      Total balance
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setStage('sheet')}
+                    aria-label="Add money"
+                    style={{
+                      position: 'relative', width: '100%', height: 32,
+                      display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'center',
+                      overflow: 'hidden', padding: 6, borderRadius: 8,
+                      border: 'none', background: 'transparent', cursor: 'pointer',
+                      boxShadow: '0px 1px 3px 0px rgba(14,18,27,0.12), 0px 0px 0px 1px rgba(255,255,255,0.1)',
+                    }}
+                  >
+                    <div aria-hidden style={{ position: 'absolute', inset: 0, borderRadius: 8, backdropFilter: 'blur(15px)', background: 'rgba(255,255,255,0.1)', pointerEvents: 'none' }} />
+                    <p style={inter(500, 13, '20px', '#fff', { position: 'relative', whiteSpace: 'nowrap', padding: '0 4px', letterSpacing: '-0.078px' })}>
+                      Add money
+                    </p>
+                    <div aria-hidden style={{ position: 'absolute', inset: 0, borderRadius: 'inherit', boxShadow: 'inset 0px 0px 4px 2px rgba(255,255,255,0.1)', pointerEvents: 'none' }} />
+                  </button>
+                </motion.div>
 
               </div>
-              </div>{/* end GPU-layer clip container */}
-
-              {/* Bottom breathing room so wallet shadow isn't clipped */}
+              </div>
               <div style={{ height: 20 }} />
             </motion.div>
+          )}
 
-          ) : (
-
-            /* ── SHEET VIEW ──────────────────────────────────
-               Inline white card, same width as layout container.
-               Enters from below as the container morphs open.
-               Exit: fades down — quick so wallet re-entry feels snappy. */
+          {/* ── SHEET VIEW ───────────────────────────────────── */}
+          {stage === 'sheet' && (
             <motion.div
               key="sheet"
               style={{ position: 'relative' }}
               initial={{ opacity: 0, y: 28 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{
-                opacity: 0,
-                y: 16,
-                scale: 0.97,
+                opacity: 0, y: 16, scale: 0.97,
                 transition: { duration: 0.18, ease: [0.4, 0, 1, 1] },
               }}
               transition={{ type: 'spring', duration: 0.5, bounce: 0.15 }}
@@ -1069,12 +1284,31 @@ export default function CardFunding() {
                 onProceed={(label) => {
                   setSuccessAmt(label)
                   setStage('success')
-                  setTimeout(() => setStage('idle'), SUCCESS_RESET)
                 }}
               />
             </motion.div>
-
           )}
+
+          {/* ── SUCCESS VIEW ─────────────────────────────────── */}
+          {stage === 'success' && (
+            <motion.div
+              key="success"
+              style={{ position: 'relative' }}
+              initial={{ opacity: 0, y: 28 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{
+                opacity: 0, y: 16, scale: 0.97,
+                transition: { duration: 0.18, ease: [0.4, 0, 1, 1] },
+              }}
+              transition={{ type: 'spring', duration: 0.5, bounce: 0.15 }}
+            >
+              <SuccessView
+                amount={successAmt}
+                onDone={() => setStage('idle')}
+              />
+            </motion.div>
+          )}
+
         </AnimatePresence>
       </motion.div>
 
