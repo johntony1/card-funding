@@ -680,7 +680,7 @@ function SuccessView({ amount, onDone }: { amount: string; onDone: () => void })
           transition={{ type: 'spring', stiffness: 700, damping: 42 }}
           style={{
             width: '100%', height: 40,
-            borderRadius: 24, border: 'none',
+            borderRadius: 8, border: 'none',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: '#ffffff', cursor: 'pointer',
             boxShadow: '0px 1px 3px 0px rgba(14,18,27,0.12), 0px 0px 0px 1px #ebebeb',
